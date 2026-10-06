@@ -1,0 +1,16 @@
+# 절대 올리면 안 되는 것: API 키
+.env
+
+# 다시 만들 수 있는 것
+.venv/
+__pycache__/
+*.pyc
+models/
+node_modules/
+.vercel/
+
+# 질문 기록 (질문 내용이 들어 있음)
+logs/
+
+# 업로드 실행 기록
+push_log.txt

@@ -1,0 +1,15 @@
+[project]
+name = "fastcampus-course-chatbot"
+version = "0.1.0"
+description = "패스트캠퍼스 강의 추천 RAG 챗봇 (교육 시연용, 비공식)"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "requests",
+    "beautifulsoup4",
+    "scikit-learn",
+    "numpy",
+    "streamlit",
+    "openai",
+    "python-dotenv",
+    "fastembed",
+]

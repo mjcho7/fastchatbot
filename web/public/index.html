@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>강의 추천 챗봇</title>
+<meta name="robots" content="noindex">
+<style>
+  :root {
+    --bg: #faf8f5; --panel: #ffffff; --ink: #2b2723; --muted: #7b736b; --line: #e8e2da;
+    --accent: #d9783c; --accent-ink: #ffffff; --user: #f3ece3; --chip: #f5f0e9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1a18; --panel: #262320; --ink: #ece7e1; --muted: #a39a90; --line: #3a3531;
+      --accent: #e68f56; --accent-ink: #1c1a18; --user: #33302b; --chip: #2f2b27;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header { padding: 20px 16px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .wrap { width: 100%; max-width: 760px; margin: 0 auto; }
+  h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  main { flex: 1; overflow-y: auto; padding: 20px 16px; }
+  .msg { margin: 0 0 18px; }
+  .msg.user { display: flex; justify-content: flex-end; }
+  .msg.user .bubble { background: var(--user); border-radius: 16px 16px 4px 16px; padding: 10px 14px; max-width: 85%; white-space: pre-wrap; }
+  .msg.bot .bubble { background: var(--panel); border: 1px solid var(--line); border-radius: 4px 16px 16px 16px; padding: 14px 16px; }
+  .bubble p { margin: 0 0 10px; } .bubble p:last-child { margin-bottom: 0; }
+  .bubble a { color: var(--accent); text-underline-offset: 3px; word-break: break-all; }
+  .bubble ul, .bubble ol { margin: 0 0 10px; padding-left: 22px; }
+  details.sources { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; font-size: 14px; }
+  details.sources summary { cursor: pointer; color: var(--muted); }
+  details.sources ol { margin: 8px 0 0; padding-left: 20px; }
+  details.sources li { margin-bottom: 6px; }
+  details.sources .meta { color: var(--muted); font-size: 12.5px; }
+  .empty { text-align: center; color: var(--muted); padding: 28px 0 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }
+  .chips button { background: var(--chip); border: 1px solid var(--line); color: var(--ink); border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  .chips button:hover { border-color: var(--accent); }
+  footer { border-top: 1px solid var(--line); background: var(--panel); padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); }
+  form { display: flex; gap: 8px; }
+  textarea, input[type=password] {
+    flex: 1; resize: none; font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 12px; padding: 11px 13px; min-height: 46px; max-height: 140px;
+  }
+  textarea:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.send { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 12px; padding: 0 18px; font: inherit; font-weight: 600; cursor: pointer; min-height: 46px; }
+  button.send:disabled { opacity: .5; cursor: default; }
+  .note { margin: 8px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
+  .error { color: #c0392b; }
+  #gate { display: none; margin-bottom: 10px; }
+  .dots::after { content: "…"; animation: blink 1.2s infinite; } @keyframes blink { 50% { opacity: .2; } }
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>강의 추천 챗봇</h1>
+  <p>패스트캠퍼스 공개 강의 정보를 검색해 추천하는 RAG 시연용 챗봇 · 비공식</p>
+</div></header>
+
+<main id="scroll"><div class="wrap" id="chat">
+  <div class="empty" id="empty">
+    어떤 것을 배우고 싶은지 편하게 적어 보세요.
+    <div class="chips">
+      <button type="button">엑셀 반복 업무를 자동화하고 싶은 비개발자</button>
+      <button type="button">보고서를 AI로 빨리 쓰는 법</button>
+      <button type="button">데이터 분석 입문 강의</button>
+    </div>
+  </div>
+</div></main>
+
+<footer><div class="wrap">
+  <form id="gate">
+    <input type="password" id="code" placeholder="접속 코드를 입력하세요" autocomplete="off">
+    <button class="send" type="submit">확인</button>
+  </form>
+  <form id="form">
+    <textarea id="q" rows="1" maxlength="500" placeholder="무엇을 배우고 싶으세요?"></textarea>
+    <button class="send" id="send" type="submit">보내기</button>
+  </form>
+  <p class="note">답변은 AI가 생성하며 틀릴 수 있습니다. 가격과 일정은 강의 페이지에서 확인하세요.</p>
+</div></footer>
+
+<script>
+const chat = document.getElementById("chat"), scroller = document.getElementById("scroll");
+const form = document.getElementById("form"), q = document.getElementById("q"), send = document.getElementById("send");
+const gate = document.getElementById("gate"), codeInput = document.getElementById("code");
+let history = [], busy = false, pending = null;
+let code = ""; try { code = sessionStorage.getItem("code") || ""; } catch {}
+
+const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const safeUrl = (u) => (/^https?:\/\//i.test(u) ? u : "#");
+
+// 아주 작은 마크다운 변환: 링크, 굵게, 목록, 문단 (먼저 전부 이스케이프해서 안전하게)
+function md(text) {
+  const inline = (s) => esc(s)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  let html = "", list = null;
+  const close = () => { if (list) { html += `</${list}>`; list = null; } };
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    const ul = line.match(/^[-*•]\s+(.*)/), ol = line.match(/^\d+[.)]\s+(.*)/), h = line.match(/^#{1,6}\s+(.*)/);
+    if (ul || ol) {
+      const tag = ul ? "ul" : "ol";
+      if (list !== tag) { close(); html += `<${tag}>`; list = tag; }
+      html += `<li>${inline((ul || ol)[1])}</li>`;
+    } else if (!line) { close(); }
+    else { close(); html += h ? `<p><strong>${inline(h[1])}</strong></p>` : `<p>${inline(line)}</p>`; }
+  }
+  close();
+  return html;
+}
+
+function add(role, html) {
+  document.getElementById("empty")?.remove();
+  const m = document.createElement("div"); m.className = "msg " + role;
+  const b = document.createElement("div"); b.className = "bubble"; b.innerHTML = html;
+  m.appendChild(b); chat.appendChild(m); scroller.scrollTop = scroller.scrollHeight;
+  return b;
+}
+
+function sourcesHtml(sources) {
+  if (!sources?.length) return "";
+  const items = sources.map((s) =>
+    `<li><a href="${esc(safeUrl(s.url))}" target="_blank" rel="noopener">${esc(s.title)}</a>
+     <div class="meta">${esc([s.category, s.level, s.hours].filter(Boolean).join(" · "))} · 유사도 ${esc(String(s.score))}</div></li>`).join("");
+  return `<details class="sources"><summary>검색된 강의 ${sources.length}개 (추천 근거)</summary><ol>${items}</ol></details>`;
+}
+
+async function ask(question) {
+  if (busy || !question.trim()) return;
+  busy = true; send.disabled = true;
+  add("user", esc(question));
+  const bubble = add("bot", '<span class="dots">강의를 찾는 중</span>');
+  let answer = "", sources = [];
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, history, code }),
+    });
+    if (res.status === 401) {
+      bubble.parentElement.previousElementSibling?.remove(); bubble.parentElement.remove();
+      pending = question; gate.style.display = "flex"; codeInput.focus(); return;
+    }
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "오류가 발생했습니다");
+
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let head = "", gotHead = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      let text = dec.decode(value, { stream: true });
+      if (!gotHead) {               // 첫 줄은 검색된 강의 목록(JSON)
+        head += text; const nl = head.indexOf("\n");
+        if (nl < 0) continue;
+        sources = JSON.parse(head.slice(0, nl)).sources || []; text = head.slice(nl + 1); gotHead = true;
+      }
+      answer += text;
+      bubble.innerHTML = md(answer) + sourcesHtml(sources);
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+    if (!answer) bubble.innerHTML = "<p>답변을 받지 못했습니다.</p>" + sourcesHtml(sources);
+    history.push({ role: "user", content: question }, { role: "assistant", content: answer });
+    history = history.slice(-6);
+  } catch (e) {
+    bubble.innerHTML = `<p class="error">${esc(e.message || "오류가 발생했습니다")}</p>`;
+  } finally {
+    busy = false; send.disabled = false; q.focus();
+  }
+}
+
+form.addEventListener("submit", (e) => { e.preventDefault(); const v = q.value; q.value = ""; q.style.height = "auto"; ask(v); });
+q.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
+q.addEventListener("input", () => { q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 140) + "px"; });
+document.querySelectorAll(".chips button").forEach((b) => b.addEventListener("click", () => ask(b.textContent)));
+gate.addEventListener("submit", (e) => {
+  e.preventDefault(); code = codeInput.value.trim(); codeInput.value = "";
+  try { sessionStorage.setItem("code", code); } catch {}
+  gate.style.display = "none";
+  if (pending) { const p = pending; pending = null; ask(p); }
+});
+</script>
+</body>
+</html>
