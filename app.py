@@ -3,6 +3,7 @@
 화면 구성: 한 줄 결론 -> 추천 카드(가로) -> 이어서 물어보기 -> 평가.
 검색 근거와 색인 정보는 사이드바의 '운영자 보기'를 켰을 때만 보인다.
 """
+import html
 import json
 import os
 import uuid
@@ -187,8 +188,12 @@ LEVEL_COLOR = {"누구나": "green"}
 def show_card(col, pick):
     with col.container(border=True, height="stretch"):
         st.badge(pick["label"], color="primary" if pick["rank"] == 1 else "gray")
-        if pick.get("image"):
-            st.image(pick["image"], width="stretch")
+        if pick.get("image") and pick["image"].startswith("https://"):
+            st.markdown(
+                f"<img src='{html.escape(pick['image'], quote=True)}' alt='' loading='lazy' "
+                "style='width:100%;height:150px;object-fit:cover;border-radius:8px;display:block'>",
+                unsafe_allow_html=True,
+            )
         st.markdown(f"**{pick['title']}**")
         with st.container(horizontal=True):
             if pick.get("level"):
@@ -204,7 +209,10 @@ def show_card(col, pick):
 
 def show_answer(msg, is_last):
     data = msg["data"]
-    st.markdown(f"#### {data['summary']}")
+    st.markdown(
+        f"<div style='font-size:1.3rem;font-weight:700;line-height:1.45;margin:0 0 .4rem'>{html.escape(data['summary'])}</div>",
+        unsafe_allow_html=True,
+    )
     if data["ask_back"]:
         st.info(data["ask_back"], icon="💬")
 
