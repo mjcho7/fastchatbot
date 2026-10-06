@@ -8,9 +8,11 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+import common  # noqa: E402
 import rag  # noqa: E402
 
 st.set_page_config(page_title="수집 데이터", page_icon="📚", layout="wide")
+common.setup()
 st.title("📚 수집 데이터")
 
 path = ROOT / "data" / "courses.json"

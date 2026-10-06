@@ -1,20 +1,25 @@
-"""3단계: 챗봇 화면.  실행:  streamlit run app.py"""
+"""3단계: 챗봇 화면.  실행:  streamlit run app.py
+
+화면 구성: 한 줄 결론 -> 추천 카드(가로) -> 이어서 물어보기 -> 평가.
+검색 근거와 색인 정보는 사이드바의 '운영자 보기'를 켰을 때만 보인다.
+"""
 import json
+import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-from dotenv import load_dotenv
+
+import common
 
 ROOT = Path(__file__).parent
-load_dotenv(ROOT / ".env")
-import rag  # noqa: E402
-
 LOG = ROOT / "logs" / "questions.jsonl"
+FEEDBACK = ROOT / "logs" / "feedback.jsonl"
 
-st.set_page_config(page_title="패스트캠퍼스 강의 추천 챗봇", page_icon="🎓")
-st.title("🎓 강의 추천 챗봇")
-st.caption("패스트캠퍼스 공개 강의 소개를 검색해 추천하는 RAG 시연용 챗봇 (비공식)")
+st.set_page_config(page_title="패스트캠퍼스 강의 추천 챗봇", page_icon="🎓", layout="wide")
+common.setup()  # .env / 배포 Secrets 읽기, 접속 암호 확인
+import rag  # noqa: E402
 
 if not (rag.DATA / "courses.json").exists():
     st.warning("강의 데이터가 없습니다. 먼저 `crawl_class.bat` 또는 `uv run python crawl.py` 를 실행하세요.")
@@ -28,10 +33,21 @@ def load_index():
 
 index = load_index()
 courses = index.courses
+ss = st.session_state
+ss.setdefault("msgs", [])
+ss.setdefault("pending", None)   # 버튼으로 넣은 질문
+ss.setdefault("exclude", [])     # '다른 강의 더 보기'로 제외한 강의 주소
 
-# ── 기준일 표시 ────────────────────────────────────
-y, m, d = rag.data_asof(courses).split("-")
-st.info(f"**{y}년 {int(m)}월 {int(d)}일** 수집 자료 기준 · 강의 {len(courses)}개. 이후 바뀐 내용은 반영되지 않았습니다.", icon="📅")
+EXAMPLES = [
+    "엑셀 반복 업무를 자동화하고 싶은 비개발자",
+    "보고서와 기획서를 AI로 빨리 쓰고 싶어요",
+    "데이터 분석을 처음 배우는 사람에게 맞는 강의",
+    "ChatGPT를 업무에 제대로 쓰는 법",
+]
+TIME_CHOICES = {"전체": None, "5시간 이하": (0, 5), "10시간 이하": (0, 10), "20시간 이하": (0, 20), "20시간 초과": (20, 10**6)}
+FILTERS = {"f_cat": ("분야", []), "f_sub": ("세부 분류", []), "f_level": ("수강 대상", []), "f_time": ("수강 시간", "전체")}
+for key, (_, empty) in FILTERS.items():
+    ss.setdefault(key, empty)
 
 
 def options(key):
@@ -43,125 +59,284 @@ def options(key):
     return sorted(x for x in vals if x)
 
 
-TIME_CHOICES = {"전체": None, "5시간 이하": (0, 5), "10시간 이하": (0, 10), "20시간 이하": (0, 20), "20시간 초과": (20, 10**6)}
+LEVELS = options("level")
 
-with st.sidebar:
-    # ── 조건 필터 ──────────────────────────────────
-    st.subheader("조건 필터")
-    f_cat = st.multiselect("분야", options("categories") or options("category"))
-    f_sub = st.multiselect("세부 분류", options("subcategory"))
-    f_level = st.multiselect("수강 대상", options("level"))
-    f_time = st.selectbox("수강 시간", list(TIME_CHOICES), help="시간을 고르면 수강 시간 정보가 없는 강의는 제외됩니다.")
 
-    def passes(c):
-        if f_cat and not (set(c.get("categories") or [c.get("category")]) & set(f_cat)):
+def passes(c, f):
+    if f["f_cat"] and not (set(c.get("categories") or [c.get("category")]) & set(f["f_cat"])):
+        return False
+    if f["f_sub"] and c.get("subcategory") not in f["f_sub"]:
+        return False
+    if f["f_level"] and c.get("level") not in f["f_level"]:
+        return False
+    if TIME_CHOICES[f["f_time"]]:
+        lo, hi = TIME_CHOICES[f["f_time"]]
+        h = rag.hours_number(c)
+        if h is None or h > hi or (lo and h <= lo):
             return False
-        if f_sub and c.get("subcategory") not in f_sub:
-            return False
-        if f_level and c.get("level") not in f_level:
-            return False
-        if TIME_CHOICES[f_time]:
-            lo, hi = TIME_CHOICES[f_time]
-            h = rag.hours_number(c)
-            if h is None or not (lo < h <= hi if lo else h <= hi):
-                return False
-        return True
-
-    filtering = bool(f_cat or f_sub or f_level or TIME_CHOICES[f_time])
-    allowed = [i for i, c in enumerate(courses) if passes(c)] if filtering else None
-    if filtering:
-        st.caption(f"조건에 맞는 강의 **{len(allowed)}개** / 전체 {len(courses)}개")
-
-    st.subheader("설정")
-    k = st.slider("검색할 강의 수", 3, 8, 5)
-    show = st.toggle("검색 근거 보기 (RAG의 R)", value=True)
-    save_log = st.toggle("질문 기록 저장", value=True, help="질문, 검색된 강의, 답변을 logs/questions.jsonl 에 저장합니다.")
-    st.markdown(f"- 강의 **{len(courses)}개** / 조각 **{len(index.chunks)}개**\n- 검색 방식: **{index.mode}**")
-    if index.embed_stats:
-        st.caption("임베딩: 재사용 {reused}개 · 새로 계산 {computed}개 · 삭제 {removed}개".format(**index.embed_stats))
-    if st.button("대화 지우기"):
-        st.session_state.msgs = []
+    return True
 
 
-def show_cards(cards):
-    """추천 카드: 제목·링크·수강 대상·시간은 수집 데이터에서 그대로 가져온다 (AI가 쓴 글이 아님)."""
-    if not cards:
+def current_filters():
+    return {k: ss[k] for k in FILTERS}
+
+
+def allowed_ids(f, exclude=()):
+    active = any(f[k] != FILTERS[k][1] for k in FILTERS)
+    if not active and not exclude:
+        return None
+    return [i for i, c in enumerate(courses) if passes(c, f) and c["url"] not in exclude]
+
+
+# ── 버튼이 누르는 동작들 (화면을 다시 그리기 전에 상태를 바꾼다) ─────────────────
+def last_question():
+    users = [m["content"] for m in ss.msgs if m["role"] == "user"]
+    return users[-1] if users else None
+
+
+def ask(question, keep_exclude=False):
+    if not keep_exclude:
+        ss.exclude = []
+    ss.pending = question
+
+
+def clear_filter(key, reask=False):
+    ss[key] = FILTERS[key][1]
+    if reask and last_question():
+        ask(last_question())
+
+
+def clear_all_filters():
+    for key, (_, empty) in FILTERS.items():
+        ss[key] = empty
+
+
+def narrow(key, value):
+    """조건을 하나 걸고 직전 질문을 다시 검색"""
+    ss[key] = value
+    ask(last_question())
+
+
+def more_courses(shown_urls):
+    """이미 보여준 강의를 빼고 직전 질문을 다시 검색"""
+    ss.exclude = list(dict.fromkeys(ss.exclude + shown_urls))
+    ask(last_question(), keep_exclude=True)
+
+
+def save_feedback(msg_id):
+    value = ss.get(f"fb_{msg_id}")
+    if value is None:
         return
-    st.caption("추천 강의 바로가기")
-    for c in cards:
-        with st.container(border=True):
-            left, right = st.columns([1, 3])
-            if c.get("image"):
-                left.image(c["image"])
-            meta = " · ".join(x for x in [c.get("category"), c.get("subcategory"), c.get("level"), c.get("hours")] if x)
-            right.markdown(f"**{c['title']}**")
-            right.caption(meta)
-            if c.get("description"):
-                right.write(c["description"][:120] + ("…" if len(c["description"]) > 120 else ""))
-            right.link_button("강의 페이지 열기", c["url"])
+    try:
+        FEEDBACK.parent.mkdir(exist_ok=True)
+        with FEEDBACK.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"id": msg_id, "time": datetime.now().isoformat(timespec="seconds"), "helpful": bool(value)}) + "\n")
+    except Exception:
+        pass
 
 
-def pick_cards(reply, results):
-    """답변에 링크가 실린 강의만 카드로. 하나도 없으면(키 없음 등) 검색된 강의 전부."""
-    named = [r for r in results if r["url"] in reply]
-    keep = ["title", "url", "category", "subcategory", "level", "hours", "description", "image"]
-    return [{k: r.get(k, "") for k in keep} for r in (named or results)]
+# ── 사이드바 ──────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.subheader("조건 필터")
+    st.multiselect("분야", options("categories") or options("category"), key="f_cat", placeholder="전체")
+    st.multiselect("세부 분류", options("subcategory"), key="f_sub", placeholder="전체")
+    st.multiselect("수강 대상", LEVELS, key="f_level", placeholder="전체")
+    st.selectbox("수강 시간", list(TIME_CHOICES), key="f_time", help="시간을 고르면 수강 시간 정보가 없는 강의는 제외됩니다.")
+
+    st.divider()
+    operator = st.toggle("운영자 보기", value=False, help="검색 근거, 유사도, 색인 정보를 함께 보여줍니다. 수업 시연이나 점검용입니다.")
+    save_log = st.toggle("질문 기록 저장", value=True, help="질문, 검색된 강의, 추천 결과를 logs 폴더에 저장합니다.")
+    if operator:
+        k = st.slider("검색할 강의 수", 3, 8, 5)
+        st.markdown(f"- 강의 **{len(courses)}개** / 조각 **{len(index.chunks)}개**\n- 검색 방식: **{index.mode}**")
+        if index.embed_stats:
+            st.caption("임베딩: 재사용 {reused}개 · 새로 계산 {computed}개 · 삭제 {removed}개".format(**index.embed_stats))
+    else:
+        k = 5
+    if st.button("대화 지우기", width="stretch"):
+        ss.msgs, ss.exclude = [], []
+        st.rerun()
+
+# ── 머리말: 제목 + 기준일 ─────────────────────────────────────────────────────
+y, m, d = rag.data_asof(courses).split("-")
+head_l, head_r = st.columns([3, 2], vertical_alignment="bottom")
+head_l.title("🎓 강의 추천 챗봇")
+head_r.markdown(
+    f"<div style='text-align:right;opacity:.75;font-size:.9rem'>📅 {y}년 {int(m)}월 {int(d)}일 자료 기준 · 강의 {len(courses)}개<br>"
+    "패스트캠퍼스 공개 강의 정보 기반 · 비공식</div>",
+    unsafe_allow_html=True,
+)
+
+# ── 적용 중인 조건 (누르면 해제) ──────────────────────────────────────────────
+f_now = current_filters()
+active = [(key, FILTERS[key][0], f_now[key]) for key in FILTERS if f_now[key] != FILTERS[key][1]]
+if active:
+    n_ok = len(allowed_ids(f_now))
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.caption(f"적용 중인 조건 · 맞는 강의 {n_ok}개", width="content")
+        for key, label, value in active:
+            text = ", ".join(value) if isinstance(value, list) else value
+            st.button(f"{label}: {text}  ✕", key=f"chip_{key}", on_click=clear_filter, args=(key,), type="secondary")
+        st.button("모두 지우기", key="chip_all", on_click=clear_all_filters, type="tertiary")
 
 
-def write_log(question, results, reply, filters):
+# ── 추천 결과 그리기 ──────────────────────────────────────────────────────────
+LEVEL_COLOR = {"누구나": "green"}
+
+
+def show_card(col, pick):
+    with col.container(border=True, height="stretch"):
+        st.badge(pick["label"], color="primary" if pick["rank"] == 1 else "gray")
+        if pick.get("image"):
+            st.image(pick["image"], width="stretch")
+        st.markdown(f"**{pick['title']}**")
+        with st.container(horizontal=True):
+            if pick.get("level"):
+                st.badge(pick["level"], color=LEVEL_COLOR.get(pick["level"], "orange"), icon=":material/person:")
+            if pick.get("hours"):
+                st.badge(pick["hours"], color="blue", icon=":material/schedule:")
+            if pick.get("subcategory") or pick.get("category"):
+                st.badge(pick.get("subcategory") or pick["category"], color="gray")
+        if pick.get("reason"):
+            st.write(pick["reason"])
+        st.link_button("강의 보기", pick["url"], width="stretch", type="primary" if pick["rank"] == 1 else "secondary")
+
+
+def show_answer(msg, is_last):
+    data = msg["data"]
+    st.markdown(f"#### {data['summary']}")
+    if data["ask_back"]:
+        st.info(data["ask_back"], icon="💬")
+
+    picks = data["picks"]
+    if picks:
+        cols = st.columns(3)
+        for col, pick in zip(cols, picks):
+            show_card(col, pick)
+    if data["detail"]:
+        with st.expander("자세한 설명"):
+            st.markdown(data["detail"])
+
+    # 못 찾았을 때: 어떤 조건을 빼면 강의가 나오는지 알려준다
+    if not picks and data.get("relax") and is_last:
+        st.caption("조건을 하나 빼면 이만큼 있습니다.", width="content")
+        with st.container(horizontal=True):
+            for key, label, count in data["relax"]:
+                st.button(f"{label} 조건 빼기 → {count}개", key=f"relax_{msg['id']}_{key}", on_click=clear_filter, args=(key, True))
+
+    # 이어서 물어보기 (가장 최근 답변에만)
+    if is_last and picks:
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.caption("이어서 좁혀 보기", width="content")
+            if "누구나" in LEVELS and ss.f_level != ["누구나"]:
+                st.button("더 쉬운 강의만", key=f"easy_{msg['id']}", on_click=narrow, args=("f_level", ["누구나"]))
+            if ss.f_time == "전체":
+                st.button("10시간 이하만", key=f"short_{msg['id']}", on_click=narrow, args=("f_time", "10시간 이하"))
+            st.button("다른 강의 더 보기", key=f"more_{msg['id']}", on_click=more_courses, args=([p["url"] for p in picks],))
+
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.caption("이 추천이 도움이 됐나요?", width="content")
+        st.feedback("thumbs", key=f"fb_{msg['id']}", on_change=save_feedback, args=(msg["id"],))
+
+    if operator:
+        with st.expander(f"🔎 검색 근거 · 검색된 강의 {len(data['retrieved'])}개 (운영자 보기)"):
+            if data.get("filters_text"):
+                st.caption("적용 조건: " + data["filters_text"])
+            picked = {p["url"] for p in picks}
+            for r in data["retrieved"]:
+                mark = "✅ " if r["url"] in picked else ""
+                st.markdown(f"{mark}**[{r['title']}]({r['url']})** · {r['category']} · 유사도 {r['score']:.2f}")
+                st.caption(r["snippet"])
+            st.caption("추천 생성: " + ("AI (" + data["model"] + ")" if data["ai"] else "검색 순위 그대로 (AI 미사용)"))
+
+
+def write_log(msg_id, question, retrieved, data, filters_text):
     LOG.parent.mkdir(exist_ok=True)
     row = {
+        "id": msg_id,
         "time": datetime.now().isoformat(timespec="seconds"),
         "question": question,
-        "filters": filters,
-        "results": [{"title": r["title"], "url": r["url"], "score": round(r["score"], 3)} for r in results],
-        "answer": reply,
+        "filters": filters_text,
+        "results": [{"title": r["title"], "url": r["url"], "score": round(r["score"], 3)} for r in retrieved],
+        "picks": [{"title": p["title"], "url": p["url"], "label": p["label"]} for p in data["picks"]],
+        "answer": data["summary"] + ("\n\n" + data["detail"] if data["detail"] else ""),
         "search_mode": index.mode,
     }
     with LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-st.session_state.setdefault("msgs", [])
-for msg in st.session_state.msgs:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        show_cards(msg.get("cards"))
+def run_question(q):
+    """검색(R) -> 추천 생성(A, G) -> 화면에 그릴 자료로 정리"""
+    f = current_filters()
+    filters_text = " / ".join(
+        f"{FILTERS[key][0]}={', '.join(f[key]) if isinstance(f[key], list) else f[key]}" for key in FILTERS if f[key] != FILTERS[key][1]
+    )
+    retrieved = index.search(q, k=k, allowed=allowed_ids(f, ss.exclude))
+    history = [{"role": m["role"], "content": m["content"]} for m in ss.msgs[-6:]]
+    rec = rag.recommend(q, retrieved, history=history)
 
-if q := st.chat_input("예: 엑셀 반복 업무를 AI로 자동화하고 싶은 비개발자에게 맞는 강의는?"):
-    st.chat_message("user").markdown(q)
-    # 후속 질문("그 중 더 쉬운 건?")도 검색되도록 직전 질문을 함께 검색어로 사용
-    prev = [m["content"] for m in st.session_state.msgs if m["role"] == "user"][-1:]
-    results = index.search(" ".join(prev + [q]), k=k, allowed=allowed)
+    keep = ["title", "url", "category", "subcategory", "level", "hours", "image"]
+    picks = []
+    for rank, p in enumerate(rec["picks"], 1):
+        r = retrieved[p["n"] - 1]  # 제목·링크·수강 대상은 AI가 쓴 글이 아니라 수집 데이터에서 가져온다
+        picks.append({**{key: r.get(key, "") for key in keep}, "label": p["label"], "reason": p["reason"], "rank": rank})
 
-    with st.chat_message("assistant"):
-        if show:
-            with st.expander(f"🔎 검색된 강의 {len(results)}개"):
-                if not results:
-                    st.write("조건에 맞는 강의가 없습니다.")
-                for r in results:
-                    st.markdown(f"**[{r['title']}]({r['url']})** · {r['category']} · 유사도 {r['score']:.2f}")
-                    st.caption(r["snippets"][0][:200] + "…")
-        history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.msgs[-6:]]
-        stream = rag.answer(q, results, history=history) if results else None
-        if not results:
-            reply = "선택한 조건에 맞는 강의가 없습니다. 왼쪽의 조건 필터를 넓혀서 다시 질문해 보세요."
-            st.markdown(reply)
-        elif stream is None:
-            reply = "API 키가 없어 검색 결과만 보여드립니다 (`.env` 에 키를 넣으면 추천 설명이 생성됩니다).\n\n" + "\n".join(
-                f"{n}. [{r['title']}]({r['url']}) — {r['description']}" for n, r in enumerate(results, 1))
-            st.markdown(reply)
-        else:
-            reply = st.write_stream(stream)
-        cards = pick_cards(reply, results) if results else []
-        show_cards(cards)
+    relax = []
+    if not retrieved:  # 조건을 하나씩 빼 보며 몇 개가 나오는지 계산
+        for key in FILTERS:
+            if f[key] != FILTERS[key][1]:
+                ids = allowed_ids({**f, key: FILTERS[key][1]}, ss.exclude)
+                count = len(courses) if ids is None else len(ids)
+                if count:
+                    relax.append((key, FILTERS[key][0], count))
+        if ss.exclude and not relax:
+            rec["summary"] = "더 보여드릴 강의가 없습니다. 조건을 바꾸거나 새로 질문해 주세요."
 
+    data = {
+        **rec, "picks": picks, "relax": relax, "filters_text": filters_text,
+        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "retrieved": [{"title": r["title"], "url": r["url"], "category": r["category"], "score": r["score"],
+                       "snippet": r["snippets"][0][:200] + "…"} for r in retrieved],
+    }
+    msg_id = uuid.uuid4().hex[:12]
     if save_log:
         try:
-            write_log(q, results, reply, {"분야": f_cat, "세부 분류": f_sub, "수강 대상": f_level, "수강 시간": f_time})
+            write_log(msg_id, q, retrieved, data, filters_text)
         except Exception as e:  # 기록 실패가 답변을 막지 않게
             st.caption(f"질문 기록 저장 실패: {e}")
+    # 다음 질문의 맥락으로 넘길 요약 글
+    memo = data["summary"] + "".join(f"\n- {p['title']} ({p['label']})" for p in picks)
+    return {"role": "assistant", "content": memo, "data": data, "id": msg_id}
 
-    st.session_state.msgs += [{"role": "user", "content": q}, {"role": "assistant", "content": reply, "cards": cards}]
 
-st.caption("질문과 답변은 품질 개선을 위해 이 컴퓨터의 `logs` 폴더에 저장됩니다. 사이드바에서 끌 수 있습니다. 개인정보는 입력하지 마세요.")
+# ── 대화 ──────────────────────────────────────────────────────────────────────
+typed = st.chat_input("무엇을 배우고 싶으세요?")
+if typed:
+    ss.exclude = []
+question = typed or ss.pending
+ss.pending = None
+
+if not ss.msgs and not question:
+    st.markdown("##### 이렇게 물어보세요")
+    with st.container(horizontal=True):
+        for i, ex in enumerate(EXAMPLES):
+            st.button(ex, key=f"ex_{i}", on_click=ask, args=(ex,))
+
+for i, msg in enumerate(ss.msgs):
+    with st.chat_message(msg["role"]):
+        if msg["role"] == "user":
+            st.markdown(msg["content"])
+        else:
+            show_answer(msg, is_last=(i == len(ss.msgs) - 1 and not question))
+
+if question:
+    st.chat_message("user").markdown(question)
+    with st.chat_message("assistant"):
+        with st.spinner("강의를 찾는 중…"):
+            reply = run_question(question)
+    ss.msgs += [{"role": "user", "content": question}, reply]
+    st.rerun()  # 방금 답변을 버튼·평가와 함께 다시 그린다
+
+st.caption("AI가 생성한 추천이라 틀릴 수 있습니다. 가격과 일정은 강의 페이지에서 확인하세요. "
+           + ("질문과 추천 결과는 품질 개선을 위해 저장됩니다. 개인정보는 입력하지 마세요." if save_log else ""))

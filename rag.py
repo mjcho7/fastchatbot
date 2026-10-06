@@ -213,3 +213,74 @@ def answer(question, results, history=()):
                 yield chunk.choices[0].delta.content
 
     return gen()
+
+
+# ── 카드형 추천: AI가 글 대신 정해진 형식(JSON)으로 답한다 ───────────────────────
+SYSTEM_CARDS = """당신은 패스트캠퍼스 강의 추천 도우미입니다.
+<강의목록>에 있는 강의만 추천하고, 목록에 없는 강의나 사실(가격, 일정 등)은 지어내지 마세요.
+반드시 아래 형식의 JSON 하나만 출력합니다.
+
+{
+  "summary": "한두 문장 결론. 어떤 강의가 왜 가장 맞는지. 맞는 강의가 없으면 그렇게 말하기",
+  "picks": [
+    {"n": 강의목록의 번호, "label": "가장 적합", "reason": "이 사람에게 이 강의가 맞는 이유 한두 문장"}
+  ],
+  "detail": "덧붙일 설명이 있을 때만. 없으면 빈 문자열",
+  "ask_back": "질문이 너무 막연해서 직무나 수준을 알아야 할 때만 되묻는 질문 한 문장. 아니면 빈 문자열"
+}
+
+규칙
+- picks 는 질문에 실제로 맞는 강의만 1~3개. 맞는 순서대로. 억지로 3개를 채우지 않습니다. 맞는 게 없으면 빈 배열.
+- label 은 10자 이내로 그 강의의 성격을 나타냅니다. 예: 가장 적합, 짧게 배우기, 더 깊이, 입문용, 실습 중심.
+- reason 은 강의목록에 적힌 내용(수강 대상, 수강 시간, 키워드, 소개)을 근거로 씁니다.
+- 가격은 목록에 없습니다. 가격을 물으면 summary 에 강의 페이지에서 확인하라고 안내합니다."""
+
+RANK_LABELS = ["가장 가까운 강의", "두 번째", "세 번째"]
+
+
+def _fallback(results, note):
+    """AI 없이 검색 순위만으로 카드를 만든다 (키 없음, 호출 실패 등)."""
+    picks = [{"n": n + 1, "label": RANK_LABELS[n], "reason": (r.get("description") or "")[:110]} for n, r in enumerate(results[:3])]
+    return {"summary": note, "picks": picks, "detail": "", "ask_back": "", "ai": False}
+
+
+def recommend(question, results, history=()):
+    """검색된 강의 중에서 추천할 강의와 이유를 정한다. 항상 같은 모양의 dict 를 돌려준다."""
+    if not results:
+        return {"summary": "조건에 맞는 강의가 없습니다.", "picks": [], "detail": "", "ask_back": "", "ai": False}
+    if not os.getenv("OPENAI_API_KEY"):
+        return _fallback(results, "API 키가 없어 추천 설명 없이 검색 순위대로 보여드립니다.")
+    try:
+        from openai import OpenAI
+
+        res = OpenAI().chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            max_tokens=900,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": SYSTEM_CARDS},
+                *history,
+                {"role": "user", "content": f"{build_context(results)}\n\n질문: {question}"},
+            ],
+        )
+        raw = json.loads(res.choices[0].message.content)
+    except Exception as e:
+        print(f"추천 생성 실패, 검색 순위로 대체: {e}")
+        return _fallback(results, "추천 설명을 만들지 못해 검색 순위대로 보여드립니다.")
+
+    picks, seen = [], set()
+    for p in raw.get("picks") or []:
+        try:
+            n = int(p.get("n"))
+        except Exception:
+            continue
+        if 1 <= n <= len(results) and n not in seen:  # 목록에 없는 번호는 버림
+            seen.add(n)
+            picks.append({"n": n, "label": str(p.get("label") or "추천")[:12], "reason": str(p.get("reason") or "").strip()})
+    return {
+        "summary": str(raw.get("summary") or "").strip() or "추천 결과입니다.",
+        "picks": picks[:3],
+        "detail": str(raw.get("detail") or "").strip(),
+        "ask_back": str(raw.get("ask_back") or "").strip(),
+        "ai": True,
+    }

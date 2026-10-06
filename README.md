@@ -32,8 +32,9 @@ uv run streamlit run app.py
 |---|---|---|
 | `crawl.py` | 카테고리 목록 데이터에서 전체 강의 수집 → `data/courses.json` | 데이터 준비 |
 | `rag.py` | 조각내기, 색인, 검색, 프롬프트 구성, 답변 생성 | R · A · G |
-| `app.py`, `pages/` | 챗봇 화면(조건 필터, 기준일, 추천 카드), 수집 데이터 화면, 질문 기록 화면 (Streamlit) | 화면 |
-| `logs/questions.jsonl` | 질문·검색 결과·답변 기록 (실행하면 생김, GitHub 제외) | 운영 |
+| `app.py`, `pages/` | 챗봇 화면(한 줄 결론, 추천 카드, 이어서 좁혀 보기, 평가, 운영자 보기), 수집 데이터 화면, 질문 기록 화면 (Streamlit) | 화면 |
+| `common.py` | 모든 화면 공통 준비: 키 읽기, 접속 암호 | 화면 |
+| `logs/` | 질문·추천 결과 기록(`questions.jsonl`), 도움됨/안 됨 평가(`feedback.jsonl`). 실행하면 생김, GitHub 제외 | 운영 |
 | `build_web.py` | 웹 버전용 데이터 묶음 생성 → `web/data/index.json` | 배포 준비 |
 | `web/` | Vercel 배포용 웹 버전 (화면 `public/index.html`, 서버 `api/chat.js`) | 배포 |
 
@@ -55,8 +56,16 @@ uv run streamlit run app.py
 
 ### Streamlit Community Cloud
 
-1. 저장소를 연결하고 실행 파일을 `app.py` 로 지정합니다.
-2. Secrets 에 `OPENAI_API_KEY = "키"` 를 넣습니다.
+1. share.streamlit.io 에서 **Create app** → 저장소 `mjcho7/fastchatbot`, 브랜치 `main`, 실행 파일 `app.py`
+2. **Advanced settings** 에서 Python 3.12 선택, Secrets 에 아래 내용 입력
+
+```
+OPENAI_API_KEY = "키"
+APP_PASSWORD = "접속 암호"
+```
+
+- `APP_PASSWORD` 는 선택입니다. 넣으면 암호를 아는 사람만 챗봇을 쓸 수 있습니다.
+- 패키지는 `uv.lock` 기준으로 설치됩니다.
 
 ### Vercel
 
